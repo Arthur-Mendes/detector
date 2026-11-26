@@ -15,8 +15,6 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      - uses: android-actions/setup-android@v3
-
       - name: Baixar love-android
         run: git clone --recurse-submodules --depth 1 --branch 11.5 https://github.com/love2d/love-android.git
 
