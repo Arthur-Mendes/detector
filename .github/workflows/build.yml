@@ -167,41 +167,60 @@ jobs:
               }
 
               private static void setRole(String r) {
+                  send("dbg cmd " + r);
                   stopAll();
-                  if (adapter == null || !adapter.isEnabled()) return;
+                  if (adapter == null || !adapter.isEnabled()) { send("dbg bt desligado"); return; }
                   try {
                       if (r.equals("hider")) startAdvertising();
                       else if (r.equals("seeker")) startScanning();
-                  } catch (Exception e) { }
+                  } catch (Exception e) {
+                      send("dbg erro " + e);
+                  }
               }
 
               private static void startAdvertising() {
                   advertiser = adapter.getBluetoothLeAdvertiser();
-                  if (advertiser == null) return;
+                  if (advertiser == null) { send("dbg sem advertiser"); return; }
                   AdvertiseSettings st = new AdvertiseSettings.Builder()
                           .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
                           .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
-                          .setConnectable(false).build();
+                          .setConnectable(false).setTimeout(0).build();
                   AdvertiseData data = new AdvertiseData.Builder()
                           .setIncludeDeviceName(false)
                           .addServiceUuid(new ParcelUuid(SERVICE)).build();
-                  advCb = new AdvertiseCallback() { };
+                  advCb = new AdvertiseCallback() {
+                      @Override
+                      public void onStartSuccess(AdvertiseSettings s) { send("dbg anunciando ok"); }
+                      @Override
+                      public void onStartFailure(int code) { send("dbg anuncio falhou " + code); }
+                  };
                   advertiser.startAdvertising(st, data, advCb);
               }
 
               private static void startScanning() {
                   scanner = adapter.getBluetoothLeScanner();
-                  if (scanner == null) return;
-                  ScanFilter f = new ScanFilter.Builder().setServiceUuid(new ParcelUuid(SERVICE)).build();
+                  if (scanner == null) { send("dbg sem scanner"); return; }
                   ScanSettings st = new ScanSettings.Builder()
                           .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build();
                   scanCb = new ScanCallback() {
+                      int seen = 0;
                       @Override
                       public void onScanResult(int type, ScanResult r) {
-                          send("rssi " + r.getRssi());
+                          seen++;
+                          boolean ours = false;
+                          if (r.getScanRecord() != null && r.getScanRecord().getServiceUuids() != null) {
+                              for (ParcelUuid u : r.getScanRecord().getServiceUuids()) {
+                                  if (u.getUuid().equals(SERVICE)) ours = true;
+                              }
+                          }
+                          if (ours) send("rssi " + r.getRssi());
+                          else if (seen % 20 == 1) send("dbg viu " + seen + " aparelhos (nenhum e o escondedor)");
                       }
+                      @Override
+                      public void onScanFailed(int code) { send("dbg busca falhou " + code); }
                   };
-                  scanner.startScan(Collections.singletonList(f), st, scanCb);
+                  scanner.startScan(null, st, scanCb);
+                  send("dbg buscando...");
               }
           }
           JAVA
