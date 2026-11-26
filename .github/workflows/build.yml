@@ -29,9 +29,18 @@ jobs:
       - name: Adicionar modulo Bluetooth
         working-directory: love-android
         run: |
-          D=app/src/main/java/org/love2d/android
+          G=$(find . -name GameActivity.java | head -1)
+          if [ -z "$G" ]; then
+            echo "GameActivity.java nao encontrado. Arquivos java existentes:"
+            find . -name "*.java" | head -40
+            exit 1
+          fi
+          echo "GameActivity em: $G"
+          D=$(dirname "$G")
+          PKG=$(grep -m1 '^package' "$G" | sed 's/package \(.*\);.*/\1/')
+          echo "Pacote: $PKG"
           cat > $D/BleBridge.java << 'JAVA'
-          package org.love2d.android;
+          package PKGNAME;
 
           import android.annotation.SuppressLint;
           import android.app.Activity;
@@ -197,13 +206,15 @@ jobs:
           }
           JAVA
 
+          sed -i "s/PKGNAME/$PKG/" $D/BleBridge.java
+
           # chama o modulo quando o app abre
-          G=$D/GameActivity.java
           sed -i '0,/super.onCreate(savedInstanceState);/s//super.onCreate(savedInstanceState);\n        BleBridge.start(this);/' $G
           grep -q "BleBridge.start" $G
 
           # permissoes (so adiciona as que faltam)
-          M=app/src/main/AndroidManifest.xml
+          M=$(find app -name AndroidManifest.xml | grep 'src/main' | head -1)
+          echo "Manifest em: $M"
           for P in INTERNET BLUETOOTH BLUETOOTH_ADMIN BLUETOOTH_SCAN BLUETOOTH_CONNECT BLUETOOTH_ADVERTISE ACCESS_FINE_LOCATION; do
             grep -q "android.permission.$P\"" $M || sed -i "0,/<application/s//<uses-permission android:name=\"android.permission.$P\" \/>\n    <application/" $M
           done
