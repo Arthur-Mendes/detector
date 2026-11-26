@@ -1,0 +1,223 @@
+name: Build APK
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Baixar love-android
+        run: git clone --recurse-submodules --depth 1 --branch 11.5 https://github.com/love2d/love-android.git
+
+      - name: Embutir o jogo
+        run: |
+          cd game
+          zip -9 -r ../game.love .
+          cd ..
+          mkdir -p love-android/app/src/embed/assets
+          cp game.love love-android/app/src/embed/assets/game.love
+
+      - name: Adicionar modulo Bluetooth
+        working-directory: love-android
+        run: |
+          D=app/src/main/java/org/love2d/android
+          cat > $D/BleBridge.java << 'JAVA'
+          package org.love2d.android;
+
+          import android.annotation.SuppressLint;
+          import android.app.Activity;
+          import android.bluetooth.BluetoothAdapter;
+          import android.bluetooth.BluetoothManager;
+          import android.bluetooth.le.AdvertiseCallback;
+          import android.bluetooth.le.AdvertiseData;
+          import android.bluetooth.le.AdvertiseSettings;
+          import android.bluetooth.le.BluetoothLeAdvertiser;
+          import android.bluetooth.le.BluetoothLeScanner;
+          import android.bluetooth.le.ScanCallback;
+          import android.bluetooth.le.ScanFilter;
+          import android.bluetooth.le.ScanResult;
+          import android.bluetooth.le.ScanSettings;
+          import android.content.Context;
+          import android.content.pm.PackageManager;
+          import android.os.Build;
+          import android.os.Handler;
+          import android.os.Looper;
+          import android.os.ParcelUuid;
+          import java.net.DatagramPacket;
+          import java.net.DatagramSocket;
+          import java.net.InetAddress;
+          import java.util.ArrayList;
+          import java.util.Collections;
+          import java.util.UUID;
+          import java.util.concurrent.ExecutorService;
+          import java.util.concurrent.Executors;
+
+          @SuppressLint("MissingPermission")
+          public class BleBridge {
+              private static final UUID SERVICE = UUID.fromString("7d1c0de0-0000-4a5e-9b1d-5eed0000d37c");
+              private static final int TO_LUA = 9876;
+              private static final int FROM_LUA = 9877;
+              private static final Handler main = new Handler(Looper.getMainLooper());
+              private static final ExecutorService net = Executors.newSingleThreadExecutor();
+              private static Activity act;
+              private static BluetoothAdapter adapter;
+              private static BluetoothLeScanner scanner;
+              private static BluetoothLeAdvertiser advertiser;
+              private static ScanCallback scanCb;
+              private static AdvertiseCallback advCb;
+              private static DatagramSocket out;
+              private static boolean started = false;
+
+              private static String[] perms() {
+                  if (Build.VERSION.SDK_INT >= 31) {
+                      return new String[]{"android.permission.BLUETOOTH_SCAN",
+                              "android.permission.BLUETOOTH_ADVERTISE",
+                              "android.permission.BLUETOOTH_CONNECT",
+                              "android.permission.ACCESS_FINE_LOCATION"};
+                  }
+                  return new String[]{"android.permission.ACCESS_FINE_LOCATION"};
+              }
+
+              private static ArrayList<String> missing() {
+                  ArrayList<String> m = new ArrayList<>();
+                  for (String p : perms()) {
+                      if (Build.VERSION.SDK_INT >= 23
+                              && act.checkSelfPermission(p) != PackageManager.PERMISSION_GRANTED) {
+                          m.add(p);
+                      }
+                  }
+                  return m;
+              }
+
+              public static void start(Activity a) {
+                  if (started) return;
+                  started = true;
+                  act = a;
+                  ArrayList<String> m = missing();
+                  if (!m.isEmpty() && Build.VERSION.SDK_INT >= 23) {
+                      a.requestPermissions(m.toArray(new String[0]), 77);
+                  }
+                  waitPermissions();
+              }
+
+              private static void waitPermissions() {
+                  if (missing().isEmpty()) {
+                      init();
+                  } else {
+                      main.postDelayed(BleBridge::waitPermissions, 1000);
+                  }
+              }
+
+              private static void init() {
+                  BluetoothManager bm = (BluetoothManager) act.getSystemService(Context.BLUETOOTH_SERVICE);
+                  adapter = bm.getAdapter();
+                  new Thread(BleBridge::listen).start();
+                  hello();
+              }
+
+              private static void hello() {
+                  if (adapter == null || !adapter.isEnabled()) send("btoff"); else send("hello");
+                  main.postDelayed(BleBridge::hello, 1000);
+              }
+
+              private static void send(final String s) {
+                  net.execute(() -> {
+                      try {
+                          if (out == null) out = new DatagramSocket();
+                          byte[] b = s.getBytes();
+                          out.send(new DatagramPacket(b, b.length, InetAddress.getByName("127.0.0.1"), TO_LUA));
+                      } catch (Exception e) { }
+                  });
+              }
+
+              private static void listen() {
+                  try (DatagramSocket s = new DatagramSocket(FROM_LUA, InetAddress.getByName("127.0.0.1"))) {
+                      byte[] buf = new byte[64];
+                      while (true) {
+                          DatagramPacket p = new DatagramPacket(buf, buf.length);
+                          s.receive(p);
+                          final String cmd = new String(p.getData(), 0, p.getLength()).trim();
+                          main.post(() -> setRole(cmd));
+                      }
+                  } catch (Exception e) { }
+              }
+
+              private static void stopAll() {
+                  try { if (scanner != null && scanCb != null) scanner.stopScan(scanCb); } catch (Exception e) { }
+                  try { if (advertiser != null && advCb != null) advertiser.stopAdvertising(advCb); } catch (Exception e) { }
+                  scanner = null; scanCb = null; advertiser = null; advCb = null;
+              }
+
+              private static void setRole(String r) {
+                  stopAll();
+                  if (adapter == null || !adapter.isEnabled()) return;
+                  try {
+                      if (r.equals("hider")) startAdvertising();
+                      else if (r.equals("seeker")) startScanning();
+                  } catch (Exception e) { }
+              }
+
+              private static void startAdvertising() {
+                  advertiser = adapter.getBluetoothLeAdvertiser();
+                  if (advertiser == null) return;
+                  AdvertiseSettings st = new AdvertiseSettings.Builder()
+                          .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
+                          .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
+                          .setConnectable(false).build();
+                  AdvertiseData data = new AdvertiseData.Builder()
+                          .setIncludeDeviceName(false)
+                          .addServiceUuid(new ParcelUuid(SERVICE)).build();
+                  advCb = new AdvertiseCallback() { };
+                  advertiser.startAdvertising(st, data, advCb);
+              }
+
+              private static void startScanning() {
+                  scanner = adapter.getBluetoothLeScanner();
+                  if (scanner == null) return;
+                  ScanFilter f = new ScanFilter.Builder().setServiceUuid(new ParcelUuid(SERVICE)).build();
+                  ScanSettings st = new ScanSettings.Builder()
+                          .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build();
+                  scanCb = new ScanCallback() {
+                      @Override
+                      public void onScanResult(int type, ScanResult r) {
+                          send("rssi " + r.getRssi());
+                      }
+                  };
+                  scanner.startScan(Collections.singletonList(f), st, scanCb);
+              }
+          }
+          JAVA
+
+          # chama o modulo quando o app abre
+          G=$D/GameActivity.java
+          sed -i '0,/super.onCreate(savedInstanceState);/s//super.onCreate(savedInstanceState);\n        BleBridge.start(this);/' $G
+          grep -q "BleBridge.start" $G
+
+          # permissoes (so adiciona as que faltam)
+          M=app/src/main/AndroidManifest.xml
+          for P in INTERNET BLUETOOTH BLUETOOTH_ADMIN BLUETOOTH_SCAN BLUETOOTH_CONNECT BLUETOOTH_ADVERTISE ACCESS_FINE_LOCATION; do
+            grep -q "android.permission.$P\"" $M || sed -i "0,/<application/s//<uses-permission android:name=\"android.permission.$P\" \/>\n    <application/" $M
+          done
+
+      - name: Compilar
+        working-directory: love-android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleEmbedNoRecordDebug --no-daemon
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: detector-apk
+          path: love-android/app/build/outputs/apk/embedNoRecord/debug/*.apk
+          
