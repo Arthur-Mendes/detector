@@ -25,6 +25,7 @@ local bleReal = false
 local bleStatus = "Sem Bluetooth (modo simulação)"
 local lastHello = -100
 local lastRssiTime = -100
+local dbgMsg = ""
 
 local function clamp(v, a, b) return math.max(a, math.min(b, v)) end
 local function lerp(a, b, t) return a + (b - a) * t end
@@ -62,6 +63,8 @@ local function pollNet()
       lastHello = now; bleStatus = "Bluetooth pronto"
     elseif msg == "btoff" then
       lastHello = now; bleStatus = "Ligue o Bluetooth"
+    elseif msg:sub(1, 4) == "dbg " then
+      dbgMsg = msg:sub(5); lastHello = now
     elseif msg:sub(1, 5) == "rssi " then
       local v = tonumber(msg:sub(6))
       if v then pushHistory(v); lastRssiTime = now; lastHello = now end
@@ -193,6 +196,8 @@ local function drawHider()
   love.graphics.setColor(0.75, 0.75, 0.8)
   love.graphics.printf("Seu celular está emitindo o sinal.\nEsconda ele e não faça barulho!", W * 0.1, H * 0.78, W * 0.8, "center")
   love.graphics.printf(bleStatus, 0, H * 0.9, W, "center")
+  love.graphics.setColor(1, 0.9, 0.4)
+  love.graphics.printf(dbgMsg, W * 0.05, H * 0.95, W * 0.9, "center")
 end
 
 local function drawSeeker()
@@ -224,6 +229,8 @@ local function drawSeeker()
   end
   love.graphics.printf(info, 0, H * 0.65, W, "center")
   love.graphics.printf("PROCURADOR", 0, H * 0.1, W, "center")
+  love.graphics.setColor(1, 0.9, 0.4)
+  love.graphics.printf(dbgMsg, W * 0.05, H * 0.72, W * 0.9, "center")
 
   if not bleReal then
     love.graphics.setColor(0.6, 0.6, 0.65)
