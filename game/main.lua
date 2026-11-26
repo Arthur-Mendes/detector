@@ -67,7 +67,10 @@ local function pollNet()
       dbgMsg = msg:sub(5); lastHello = now
     elseif msg:sub(1, 5) == "rssi " then
       local v = tonumber(msg:sub(6))
-      if v then pushHistory(v); lastRssiTime = now; lastHello = now end
+      if v then
+        lastHello = now
+        if state == "seeker" then pushHistory(v); lastRssiTime = now end
+      end
     end
   end
   bleReal = (now - lastHello) < 3
@@ -176,6 +179,10 @@ local function drawMenu()
   love.graphics.setColor(bleReal and 0.4 or 0.8, bleReal and 0.9 or 0.7, 0.4)
   love.graphics.setFont(fSmall)
   love.graphics.printf(bleStatus, 0, H * 0.85, W, "center")
+  love.graphics.setColor(1, 0.9, 0.4)
+  love.graphics.printf(dbgMsg, W * 0.05, H * 0.89, W * 0.9, "center")
+  love.graphics.setColor(0.5, 0.5, 0.55)
+  love.graphics.printf("lua v6", 0, H * 0.96, W, "center")
 end
 
 local function drawHider()
