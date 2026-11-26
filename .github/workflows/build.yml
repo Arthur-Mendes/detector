@@ -52,7 +52,6 @@ jobs:
           import android.bluetooth.le.BluetoothLeAdvertiser;
           import android.bluetooth.le.BluetoothLeScanner;
           import android.bluetooth.le.ScanCallback;
-          import android.bluetooth.le.ScanFilter;
           import android.bluetooth.le.ScanResult;
           import android.bluetooth.le.ScanSettings;
           import android.content.Context;
@@ -65,7 +64,6 @@ jobs:
           import java.net.DatagramSocket;
           import java.net.InetAddress;
           import java.util.ArrayList;
-          import java.util.Collections;
           import java.util.UUID;
           import java.util.concurrent.ExecutorService;
           import java.util.concurrent.Executors;
@@ -74,7 +72,6 @@ jobs:
           public class BleBridge {
               private static final UUID SERVICE = UUID.fromString("7d1c0de0-0000-4a5e-9b1d-5eed0000d37c");
               private static final int TO_LUA = 9876;
-              private static final int FROM_LUA = 9877;
               private static final Handler main = new Handler(Looper.getMainLooper());
               private static final ExecutorService net = Executors.newSingleThreadExecutor();
               private static Activity act;
@@ -85,6 +82,11 @@ jobs:
               private static AdvertiseCallback advCb;
               private static DatagramSocket out;
               private static boolean started = false;
+              private static boolean active = false;
+              private static String advStatus = "?";
+              private static String scanStatus = "?";
+              private static int seen = 0;
+              private static int ours = 0;
 
               private static String[] perms() {
                   if (Build.VERSION.SDK_INT >= 31) {
@@ -122,6 +124,7 @@ jobs:
                   if (missing().isEmpty()) {
                       init();
                   } else {
+                      send("dbg java v6 esperando permissoes");
                       main.postDelayed(BleBridge::waitPermissions, 1000);
                   }
               }
@@ -129,12 +132,22 @@ jobs:
               private static void init() {
                   BluetoothManager bm = (BluetoothManager) act.getSystemService(Context.BLUETOOTH_SERVICE);
                   adapter = bm.getAdapter();
-                  new Thread(BleBridge::listen).start();
                   hello();
               }
 
               private static void hello() {
-                  if (adapter == null || !adapter.isEnabled()) send("btoff"); else send("hello");
+                  if (adapter == null || !adapter.isEnabled()) {
+                      active = false;
+                      send("btoff");
+                  } else {
+                      send("hello");
+                      if (!active) {
+                          active = true;
+                          startAll();
+                      }
+                      send("dbg java v6 anuncio:" + advStatus + " busca:" + scanStatus
+                              + " viu:" + seen + " nosso:" + ours);
+                  }
                   main.postDelayed(BleBridge::hello, 1000);
               }
 
@@ -148,39 +161,14 @@ jobs:
                   });
               }
 
-              private static void listen() {
-                  try (DatagramSocket s = new DatagramSocket(FROM_LUA, InetAddress.getByName("127.0.0.1"))) {
-                      byte[] buf = new byte[64];
-                      while (true) {
-                          DatagramPacket p = new DatagramPacket(buf, buf.length);
-                          s.receive(p);
-                          final String cmd = new String(p.getData(), 0, p.getLength()).trim();
-                          main.post(() -> setRole(cmd));
-                      }
-                  } catch (Exception e) { }
-              }
-
-              private static void stopAll() {
-                  try { if (scanner != null && scanCb != null) scanner.stopScan(scanCb); } catch (Exception e) { }
-                  try { if (advertiser != null && advCb != null) advertiser.stopAdvertising(advCb); } catch (Exception e) { }
-                  scanner = null; scanCb = null; advertiser = null; advCb = null;
-              }
-
-              private static void setRole(String r) {
-                  send("dbg cmd " + r);
-                  stopAll();
-                  if (adapter == null || !adapter.isEnabled()) { send("dbg bt desligado"); return; }
-                  try {
-                      if (r.equals("hider")) startAdvertising();
-                      else if (r.equals("seeker")) startScanning();
-                  } catch (Exception e) {
-                      send("dbg erro " + e);
-                  }
+              private static void startAll() {
+                  try { startAdvertising(); } catch (Exception e) { advStatus = "erro " + e; }
+                  try { startScanning(); } catch (Exception e) { scanStatus = "erro " + e; }
               }
 
               private static void startAdvertising() {
                   advertiser = adapter.getBluetoothLeAdvertiser();
-                  if (advertiser == null) { send("dbg sem advertiser"); return; }
+                  if (advertiser == null) { advStatus = "indisponivel"; return; }
                   AdvertiseSettings st = new AdvertiseSettings.Builder()
                           .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
                           .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
@@ -190,37 +178,37 @@ jobs:
                           .addServiceUuid(new ParcelUuid(SERVICE)).build();
                   advCb = new AdvertiseCallback() {
                       @Override
-                      public void onStartSuccess(AdvertiseSettings s) { send("dbg anunciando ok"); }
+                      public void onStartSuccess(AdvertiseSettings s) { advStatus = "ok"; }
                       @Override
-                      public void onStartFailure(int code) { send("dbg anuncio falhou " + code); }
+                      public void onStartFailure(int code) { advStatus = "falhou" + code; }
                   };
+                  advStatus = "iniciando";
                   advertiser.startAdvertising(st, data, advCb);
               }
 
               private static void startScanning() {
                   scanner = adapter.getBluetoothLeScanner();
-                  if (scanner == null) { send("dbg sem scanner"); return; }
+                  if (scanner == null) { scanStatus = "indisponivel"; return; }
                   ScanSettings st = new ScanSettings.Builder()
                           .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build();
                   scanCb = new ScanCallback() {
-                      int seen = 0;
                       @Override
                       public void onScanResult(int type, ScanResult r) {
                           seen++;
-                          boolean ours = false;
                           if (r.getScanRecord() != null && r.getScanRecord().getServiceUuids() != null) {
                               for (ParcelUuid u : r.getScanRecord().getServiceUuids()) {
-                                  if (u.getUuid().equals(SERVICE)) ours = true;
+                                  if (u.getUuid().equals(SERVICE)) {
+                                      ours++;
+                                      send("rssi " + r.getRssi());
+                                  }
                               }
                           }
-                          if (ours) send("rssi " + r.getRssi());
-                          else if (seen % 20 == 1) send("dbg viu " + seen + " aparelhos (nenhum e o escondedor)");
                       }
                       @Override
-                      public void onScanFailed(int code) { send("dbg busca falhou " + code); }
+                      public void onScanFailed(int code) { scanStatus = "falhou" + code; }
                   };
+                  scanStatus = "ok";
                   scanner.startScan(null, st, scanCb);
-                  send("dbg buscando...");
               }
           }
           JAVA
