@@ -223,11 +223,13 @@ jobs:
         working-directory: love-android
         run: |
           chmod +x gradlew
-          ./gradlew -q tasks --all | grep -oE '^assemble[A-Za-z]+Debug' | sort -u
-          T=$(./gradlew -q tasks --all | grep -oE '^assemble[A-Za-z]+NoRecordDebug' | grep -v '^assembleEmbed' | head -1)
-          echo "Tarefa escolhida: $T"
-          test -n "$T"
-          ./gradlew $T --no-daemon
+          grep -n -A30 'productFlavors' app/build.gradle || true
+          ok=0
+          for T in assembleNormalNoRecordDebug assembleNoEmbedNoRecordDebug assembleNoRecordDebug; do
+            echo "Tentando $T"
+            if ./gradlew $T --no-daemon; then ok=1; break; fi
+          done
+          test $ok = 1
 
       - uses: actions/upload-artifact@v4
         with:
